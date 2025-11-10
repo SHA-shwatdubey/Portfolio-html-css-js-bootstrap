@@ -1,15 +1,9 @@
-name: Deploy Portfolio to AWS (Singapore)
+name: Deploy Portfolio to AWS Singapore
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      debug_enabled:
-        description: 'Enable debug mode'
-        required: false
-        default: false
 
 jobs:
   deploy:
@@ -31,6 +25,25 @@ jobs:
         with:
           terraform_version: "1.5.0"
 
+      - name: Prepare SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/portfolio-key.pem
+          chmod 600 ~/.ssh/portfolio-key.pem
+          ssh-keygen -y -f ~/.ssh/portfolio-key.pem > ~/.ssh/portfolio-key.pub
+
+      - name: Create terraform.tfvars
+        run: |
+          cd terraform
+          cat > terraform.tfvars << EOF
+aws_region = "${{ secrets.AWS_REGION }}"
+instance_type = "t2.micro"
+public_key_path = "~/.ssh/portfolio-key.pub"
+github_repo_url = "${{ secrets.GITHUB_REPO_URL }}"
+EOF
+          echo "✓ terraform.tfvars created"
+          cat terraform.tfvars
+
       - name: Terraform Init
         working-directory: ./terraform
         run: terraform init
@@ -47,47 +60,92 @@ jobs:
         working-directory: ./terraform
         run: |
           terraform output -raw instance_public_ip > ../public_ip.txt
-          echo "Public IP: $(cat ../public_ip.txt)"
+          echo "IP saved"
 
-      - name: Setup SSH key
+      - name: Wait for EC2
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/portfolio-key.pem
-          chmod 600 ~/.ssh/portfolio-key.pem
-          ssh-keyscan -H $(cat public_ip.txt) >> ~/.ssh/known_hosts 2>/dev/null || true
+          PUBLIC_IP=$(cat public_ip.txt)
+          echo "Waiting for EC2 at $PUBLIC_IP..."
+          timeout 300 bash -c "until ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i ~/.ssh/portfolio-key.pem ubuntu@$PUBLIC_IP 'echo ready' 2>/dev/null; do sleep 10; done" || true
 
-      - name: Wait for EC2 to be ready
+      - name: Deploy with Ansible
         run: |
-          timeout 180 bash -c 'until ssh -i ~/.ssh/portfolio-key.pem -o StrictHostKeyChecking=no ubuntu@'$(cat public_ip.txt)' "echo ready"; do sleep 10; done'
-
-      - name: Setup Ansible
-        run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install ansible
-
-      - name: Create Ansible inventory
-        run: |
-          cat > ansible/hosts.ini << EOF
-          [portfolio_servers]
-          $(cat public_ip.txt) ansible_user=ubuntu ansible_private_key_file=~/.ssh/portfolio-key.pem
-          EOF
-
-      - name: Run Ansible playbook
-        run: |
-          ansible-playbook \
-            -i ansible/hosts.ini \
-            -e "github_repo_url=${{ secrets.GITHUB_REPO_URL }}" \
-            ansible/deploy.yml
+          PUBLIC_IP=$(cat public_ip.txt)
+          
+          pip install ansible
+          
+          cat > inventory.ini << EOF
+[portfolio]
+$PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/portfolio-key.pem
+EOF
+          
+          ansible-playbook -i inventory.ini - << 'PLAYBOOK'
+---
+- hosts: portfolio
+  become: yes
+  tasks:
+    - name: Update apt
+      apt: update_cache=yes
+    
+    - name: Install nginx git
+      apt:
+        name: [nginx, git]
+        state: present
+    
+    - name: Create deploy directory
+      file:
+        path: /var/www/portfolio
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+    
+    - name: Clone portfolio repo
+      git:
+        repo: "${{ secrets.GITHUB_REPO_URL }}"
+        dest: /var/www/portfolio
+        version: main
+      become_user: www-data
+    
+    - name: Configure nginx
+      copy:
+        content: |
+          server {
+              listen 80 default_server;
+              server_name _;
+              root /var/www/portfolio;
+              index index.html;
+              
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+              
+              location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+                  expires 30d;
+              }
+          }
+        dest: /etc/nginx/sites-available/default
+    
+    - name: Enable nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+PLAYBOOK
 
       - name: Verify deployment
         run: |
+          PUBLIC_IP=$(cat public_ip.txt)
           sleep 5
-          curl -f http://$(cat public_ip.txt)/ || exit 1
-          echo "✅ Website is live!"
+          curl -I http://$PUBLIC_IP/ || exit 1
+          echo "✅ Website is live at http://$PUBLIC_IP"
 
-      - name: Create deployment summary
+      - name: Summary
+        if: always()
         run: |
-          echo "## 🚀 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          PUBLIC_IP=$(cat public_ip.txt)
+          echo "## ✅ Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Website: http://$PUBLIC_IP" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Website URL:" >> $GITHUB_STEP_SUMMARY
           echo "http://$(cat public_ip.txt)" >> $GITHUB_STEP_SUMMARY

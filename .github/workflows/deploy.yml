@@ -35,12 +35,12 @@ jobs:
       - name: Create terraform.tfvars
         run: |
           cd terraform
-          cat > terraform.tfvars << EOF
-aws_region = "${{ secrets.AWS_REGION }}"
-instance_type = "t2.micro"
-public_key_path = "~/.ssh/portfolio-key.pub"
-github_repo_url = "${{ secrets.GITHUB_REPO_URL }}"
-EOF
+          cat > terraform.tfvars << 'TFEOF'
+          aws_region = "${{ secrets.AWS_REGION }}"
+          instance_type = "t2.micro"
+          public_key_path = "~/.ssh/portfolio-key.pub"
+          github_repo_url = "${{ secrets.GITHUB_REPO_URL }}"
+          TFEOF
           echo "✓ terraform.tfvars created"
           cat terraform.tfvars
 
@@ -60,7 +60,7 @@ EOF
         working-directory: ./terraform
         run: |
           terraform output -raw instance_public_ip > ../public_ip.txt
-          echo "IP saved"
+          cat ../public_ip.txt
 
       - name: Wait for EC2
         run: |
@@ -68,88 +68,85 @@ EOF
           echo "Waiting for EC2 at $PUBLIC_IP..."
           timeout 300 bash -c "until ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i ~/.ssh/portfolio-key.pem ubuntu@$PUBLIC_IP 'echo ready' 2>/dev/null; do sleep 10; done" || true
 
-      - name: Deploy with Ansible
+      - name: Deploy Website
         run: |
           PUBLIC_IP=$(cat public_ip.txt)
           
           pip install ansible
           
-          cat > inventory.ini << EOF
-[portfolio]
-$PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/portfolio-key.pem
-EOF
+          cat > inventory.ini << 'INVEOF'
+          [portfolio]
+          $PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/portfolio-key.pem
+          INVEOF
           
-          ansible-playbook -i inventory.ini - << 'PLAYBOOK'
----
-- hosts: portfolio
-  become: yes
-  tasks:
-    - name: Update apt
-      apt: update_cache=yes
-    
-    - name: Install nginx git
-      apt:
-        name: [nginx, git]
-        state: present
-    
-    - name: Create deploy directory
-      file:
-        path: /var/www/portfolio
-        state: directory
-        owner: www-data
-        group: www-data
-        mode: '0755'
-    
-    - name: Clone portfolio repo
-      git:
-        repo: "${{ secrets.GITHUB_REPO_URL }}"
-        dest: /var/www/portfolio
-        version: main
-      become_user: www-data
-    
-    - name: Configure nginx
-      copy:
-        content: |
-          server {
-              listen 80 default_server;
-              server_name _;
-              root /var/www/portfolio;
-              index index.html;
+          ansible-playbook -i inventory.ini << 'PBEOF'
+          ---
+          - hosts: portfolio
+            become: yes
+            tasks:
+              - name: Update apt
+                apt: update_cache=yes
               
-              location / {
-                  try_files $uri $uri/ =404;
-              }
+              - name: Install nginx git
+                apt:
+                  name: [nginx, git]
+                  state: present
               
-              location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
-                  expires 30d;
-              }
-          }
-        dest: /etc/nginx/sites-available/default
-    
-    - name: Enable nginx
-      service:
-        name: nginx
-        state: started
-        enabled: yes
-PLAYBOOK
+              - name: Create deploy directory
+                file:
+                  path: /var/www/portfolio
+                  state: directory
+                  owner: www-data
+                  group: www-data
+                  mode: '0755'
+              
+              - name: Clone portfolio repo
+                git:
+                  repo: "${{ secrets.GITHUB_REPO_URL }}"
+                  dest: /var/www/portfolio
+                  version: main
+                become_user: www-data
+              
+              - name: Configure nginx
+                copy:
+                  dest: /etc/nginx/sites-available/default
+                  content: |
+                    server {
+                        listen 80 default_server;
+                        server_name _;
+                        root /var/www/portfolio;
+                        index index.html;
+                        
+                        location / {
+                            try_files $uri $uri/ =404;
+                        }
+                        
+                        location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+                            expires 30d;
+                        }
+                    }
+              
+              - name: Enable nginx
+                service:
+                  name: nginx
+                  state: started
+                  enabled: yes
+          PBEOF
 
-      - name: Verify deployment
+      - name: Verify Deployment
         run: |
           PUBLIC_IP=$(cat public_ip.txt)
           sleep 5
           curl -I http://$PUBLIC_IP/ || exit 1
-          echo "✅ Website is live at http://$PUBLIC_IP"
+          echo "✅ Website deployed successfully!"
 
-      - name: Summary
+      - name: Deployment Summary
         if: always()
         run: |
           PUBLIC_IP=$(cat public_ip.txt)
           echo "## ✅ Deployment Complete" >> $GITHUB_STEP_SUMMARY
-          echo "Website: http://$PUBLIC_IP" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Website URL:" >> $GITHUB_STEP_SUMMARY
-          echo "http://$(cat public_ip.txt)" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌍 Website URL:" >> $GITHUB_STEP_SUMMARY
+          echo "http://$PUBLIC_IP" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Resources:" >> $GITHUB_STEP_SUMMARY
-          echo "- **Instance ID**: $(terraform -chdir=terraform output -raw instance_id)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Region**: ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "### 📍 Region: Singapore (ap-southeast-1)" >> $GITHUB_STEP_SUMMARY

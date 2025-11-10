@@ -14,6 +14,8 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      TF_WORKING_DIR: terraform
     
     steps:
       - name: Checkout code
@@ -39,47 +41,41 @@ jobs:
           ssh-keygen -y -f ~/.ssh/portfolio-key.pem > ~/.ssh/portfolio-key.pub
 
       - name: Create terraform.tfvars
-        working-directory: ./terraform
         env:
           TF_AWS_REGION: ${{ secrets.AWS_REGION }}
           TF_GITHUB_REPO_URL: ${{ secrets.GITHUB_REPO_URL }}
         run: |
-          cat <<EOF > terraform.tfvars
-aws_region      = "${TF_AWS_REGION}"
-instance_type   = "t2.micro"
-public_key_path = "${HOME}/.ssh/portfolio-key.pub"
-github_repo_url = "${TF_GITHUB_REPO_URL}"
-EOF
-          echo "✅ terraform.tfvars created:"
+          cd "$TF_WORKING_DIR"
+          printf 'aws_region      = "%s"\n' "$TF_AWS_REGION" > terraform.tfvars
+          printf 'instance_type   = "%s"\n' "t2.micro" >> terraform.tfvars
+          printf 'public_key_path = "%s"\n' "$HOME/.ssh/portfolio-key.pub" >> terraform.tfvars
+          printf 'github_repo_url = "%s"\n' "$TF_GITHUB_REPO_URL" >> terraform.tfvars
+          echo "✅ terraform.tfvars created in $(pwd):"
           ls -la
           echo "---"
           cat terraform.tfvars
 
       - name: Terraform Init
-        working-directory: ./terraform
-        run: terraform init
+        run: terraform -chdir="$TF_WORKING_DIR" init
 
       - name: Terraform Plan
-        working-directory: ./terraform
         run: |
-          echo "PWD: $(pwd)"
-          ls -la
-          if [ ! -f terraform.tfvars ]; then
+          echo "PWD before changing: $(pwd)"
+          ls -la "$TF_WORKING_DIR"
+          if [ ! -f "$TF_WORKING_DIR/terraform.tfvars" ]; then
             echo "❌ terraform.tfvars missing" >&2
             exit 1
           fi
           echo "=== terraform.tfvars ==="
-          cat terraform.tfvars
-          terraform plan -var-file="$(pwd)/terraform.tfvars" -out=tfplan
+          cat "$TF_WORKING_DIR/terraform.tfvars"
+          terraform -chdir="$TF_WORKING_DIR" plan -var-file=terraform.tfvars -out=tfplan
 
       - name: Terraform Apply
-        working-directory: ./terraform
-        run: terraform apply -auto-approve tfplan
+        run: terraform -chdir="$TF_WORKING_DIR" apply -auto-approve tfplan
 
       - name: Get EC2 Public IP
-        working-directory: ./terraform
         run: |
-          terraform output -raw instance_public_ip > ../public_ip.txt
+          terraform -chdir="$TF_WORKING_DIR" output -raw instance_public_ip > public_ip.txt
           echo "Public IP: $(cat ../public_ip.txt)"
 
       - name: Setup SSH key
@@ -125,6 +121,5 @@ EOF
           echo "http://$(cat public_ip.txt)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Resources:" >> $GITHUB_STEP_SUMMARY
-          cd ./terraform
-          echo "- **Instance ID**: $(terraform output -raw instance_id)" >> ../GITHUB_STEP_SUMMARY
-          echo "- **Region**: ${{ secrets.AWS_REGION }}" >> ../GITHUB_STEP_SUMMARY
+          echo "- **Instance ID**: $(terraform -chdir="$TF_WORKING_DIR" output -raw instance_id)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region**: ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY

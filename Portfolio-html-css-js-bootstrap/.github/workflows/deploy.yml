@@ -1,26 +1,20 @@
-name: Deploy Portfolio to AWS (Singapore)
+name: Deploy Portfolio to AWS Singapore
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      debug_enabled:
-        description: 'Enable debug mode'
-        required: false
-        default: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      TF_WORKING_DIR: terraform
     
     steps:
+      # 1. Checkout code
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # 2. Configure AWS
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -28,114 +22,186 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ secrets.AWS_REGION }}
 
+      # 3. Setup Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
           terraform_version: "1.5.0"
 
-      - name: Prepare SSH key material
+      # 4. Prepare SSH Key
+      - name: Prepare SSH Key
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/portfolio-key.pem
           chmod 600 ~/.ssh/portfolio-key.pem
           ssh-keygen -y -f ~/.ssh/portfolio-key.pem > ~/.ssh/portfolio-key.pub
+          echo "SSH Key prepared:"
+          ls -la ~/.ssh/portfolio-key*
 
+      # 5. Create terraform.tfvars from local template
       - name: Create terraform.tfvars
-        env:
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          GITHUB_REPO_URL: ${{ secrets.GITHUB_REPO_URL }}
         run: |
-          set -x
-          TFVARS_PATH="terraform/terraform.tfvars"
-          echo "Creating $TFVARS_PATH..."
-          cat > "$TFVARS_PATH" << TFEOF
-aws_region      = "${AWS_REGION}"
-instance_type   = "t2.micro"
-public_key_path = "${HOME}/.ssh/portfolio-key.pub"
-github_repo_url = "${GITHUB_REPO_URL}"
-TFEOF
-          echo "File created. Contents:"
-          cat "$TFVARS_PATH"
-          echo "File size: $(wc -c < "$TFVARS_PATH") bytes"
+          cd terraform
+          # Copy the example and update values
+          cp terraform.tfvars.example terraform.tfvars.new || true
+          
+          # Create fresh tfvars with secrets
+          cat > terraform.tfvars << 'EOF'
+aws_region = "${{ secrets.AWS_REGION }}"
+instance_type = "t2.micro"
+public_key_path = "~/.ssh/portfolio-key.pub"
+github_repo_url = "${{ secrets.GITHUB_REPO_URL }}"
+EOF
+          
+          echo "✅ terraform.tfvars created:"
+          cat terraform.tfvars
+          echo ""
+          echo "File exists check:"
+          test -f terraform.tfvars && echo "✓ FILE EXISTS" || echo "✗ FILE MISSING"
 
+      # 6. Terraform Init
       - name: Terraform Init
         run: |
-          set -x
-          cd terraform
-          terraform init
-          ls -la terraform.tfvars
-
-      - name: Terraform Plan
-        run: |
-          set -x
           cd terraform
           echo "Current directory: $(pwd)"
-          echo "Files in current directory:"
+          echo "Contents:"
           ls -la
+          terraform init
+
+      # 7. Terraform Validate
+      - name: Terraform Validate
+        run: |
+          cd terraform
+          terraform validate
+
+      # 8. Terraform Plan
+      - name: Terraform Plan
+        run: |
+          cd terraform
           echo "Checking terraform.tfvars..."
-          test -f terraform.tfvars && echo "✓ File exists" || (echo "✗ File missing" && exit 1)
-          echo "File contents:"
+          test -f terraform.tfvars || (echo "ERROR: tfvars missing!" && exit 1)
+          echo "✓ tfvars found"
+          echo "Contents:"
           cat terraform.tfvars
+          echo ""
           echo "Running terraform plan..."
           terraform plan -var-file=terraform.tfvars -out=tfplan
 
+      # 9. Terraform Apply
       - name: Terraform Apply
         run: |
-          set -x
           cd terraform
           terraform apply -auto-approve tfplan
 
+      # 10. Get Output IP
       - name: Get EC2 Public IP
         run: |
-          set -x
           cd terraform
-          terraform output -raw instance_public_ip > ../public_ip.txt
-          echo "Public IP: $(cat ../public_ip.txt)"
+          PUBLIC_IP=$(terraform output -raw instance_public_ip)
+          echo "$PUBLIC_IP" > ../ec2_ip.txt
+          echo "✓ EC2 Public IP: $PUBLIC_IP"
 
-      - name: Setup SSH key
+      # 11. Wait for EC2
+      - name: Wait for EC2 Ready
         run: |
-          mkdir -p ~/.ssh
-          chmod 600 ~/.ssh/portfolio-key.pem
-          ssh-keyscan -H $(cat public_ip.txt) >> ~/.ssh/known_hosts 2>/dev/null || true
+          PUBLIC_IP=$(cat ec2_ip.txt)
+          echo "Waiting for EC2 to be ready at $PUBLIC_IP..."
+          timeout 300 bash -c "until ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i ~/.ssh/portfolio-key.pem ubuntu@$PUBLIC_IP 'echo ready' 2>/dev/null; do echo 'Waiting...'; sleep 10; done" || true
 
-      - name: Wait for EC2 to be ready
+      # 12. Deploy Website with Ansible
+      - name: Deploy with Ansible
         run: |
-          timeout 180 bash -c 'until ssh -i ~/.ssh/portfolio-key.pem -o StrictHostKeyChecking=no ubuntu@'$(cat public_ip.txt)' "echo ready"; do sleep 10; done'
+          PUBLIC_IP=$(cat ec2_ip.txt)
+          
+          # Install Ansible
+          pip install ansible boto3
+          
+          # Create inventory
+          cat > hosts.ini << EOF
+[portfolio]
+$PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/portfolio-key.pem
+EOF
+          
+          # Run playbook (simple version)
+          ansible-playbook -i hosts.ini -e "repo_url=${{ secrets.GITHUB_REPO_URL }}" -e "deploy_dir=/var/www/portfolio" << 'PLAYBOOK'
+---
+- hosts: portfolio
+  become: yes
+  tasks:
+    - name: Update apt
+      apt: update_cache=yes
+    
+    - name: Install nginx git curl
+      apt:
+        name: [nginx, git, curl]
+        state: present
+    
+    - name: Create deploy directory
+      file:
+        path: /var/www/portfolio
+        state: directory
+        owner: www-data
+        group: www-data
+    
+    - name: Clone repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: /var/www/portfolio
+        version: main
+      become_user: www-data
+    
+    - name: Configure nginx
+      copy:
+        content: |
+          server {
+              listen 80 default_server;
+              server_name _;
+              root /var/www/portfolio;
+              index index.html;
+              
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+              
+              location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+                  expires 30d;
+              }
+          }
+        dest: /etc/nginx/sites-available/default
+      notify: restart nginx
+    
+    - name: Test nginx config
+      shell: nginx -t
+    
+    - name: Start nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+    
+    handlers:
+      - name: restart nginx
+        service:
+          name: nginx
+          state: restarted
+PLAYBOOK
 
-      - name: Setup Ansible
+      # 13. Verify
+      - name: Verify Deployment
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install ansible
-
-      - name: Create Ansible inventory
-        run: |
-          cat > ansible/hosts.ini << EOF
-          [portfolio_servers]
-          $(cat public_ip.txt) ansible_user=ubuntu ansible_private_key_file=~/.ssh/portfolio-key.pem
-          EOF
-
-      - name: Run Ansible playbook
-        run: |
-          ansible-playbook \
-            -i ansible/hosts.ini \
-            -e "github_repo_url=${{ secrets.GITHUB_REPO_URL }}" \
-            ansible/deploy.yml
-
-      - name: Verify deployment
-        run: |
-          sleep 5
-          curl -f http://$(cat public_ip.txt)/ || exit 1
+          PUBLIC_IP=$(cat ec2_ip.txt)
+          echo "Testing website at http://$PUBLIC_IP..."
+          curl -I http://$PUBLIC_IP/ || exit 1
           echo "✅ Website is live!"
 
-      - name: Create deployment summary
+      # 14. Summary
+      - name: Deployment Summary
         run: |
-          set -x
-          INSTANCE_ID=$(cd terraform && terraform output -raw instance_id)
-          echo "## 🚀 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          PUBLIC_IP=$(cat ec2_ip.txt)
+          echo "## ✅ Deployment Successful!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Website URL:" >> $GITHUB_STEP_SUMMARY
-          echo "http://$(cat public_ip.txt)" >> $GITHUB_STEP_SUMMARY
+          echo "### 🌍 Website URL:" >> $GITHUB_STEP_SUMMARY
+          echo "http://$PUBLIC_IP" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Resources:" >> $GITHUB_STEP_SUMMARY
-          echo "- **Instance ID**: $INSTANCE_ID" >> $GITHUB_STEP_SUMMARY
-          echo "- **Region**: ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY
+          echo "### 📍 Region:" >> $GITHUB_STEP_SUMMARY
+          echo "Singapore (ap-southeast-1)" >> $GITHUB_STEP_SUMMARY

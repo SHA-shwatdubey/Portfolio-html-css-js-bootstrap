@@ -1,0 +1,170 @@
+📋 AWS DEPLOYMENT - CREDENTIALS CHECKLIST
+==========================================
+
+BEFORE YOU START:
+✅ AWS Account created (free tier eligible)
+✅ GitHub Account with repository forked
+✅ Git installed on your machine
+✅ Internet connection (stable)
+
+STEP 1: CREATE AWS IAM USER
+============================
+Go to: https://console.aws.amazon.com/iam/
+
+1. Click "Users" → "Create User"
+   Name: portfolio-deployer
+   ☐ Don't select "Provide AWS Management Console access"
+
+2. Attach policies (search and select):
+   ☐ AmazonEC2FullAccess
+   ☐ AmazonVPCFullAccess
+   ☐ AmazonS3FullAccess
+   ☐ IAMFullAccess
+
+3. Create Access Key:
+   - Click on user → "Security credentials" tab
+   - Click "Create access key"
+   - Select "Command Line Interface (CLI)"
+   - Accept warning and create
+
+SAVE THESE IMMEDIATELY (You won't see them again!):
+┌─────────────────────────────────────────────┐
+│ AWS_ACCESS_KEY_ID:                          │
+│ AKIA________________________________       │
+│                                             │
+│ AWS_SECRET_ACCESS_KEY:                      │
+│ ________________________________________    │
+└─────────────────────────────────────────────┘
+
+
+STEP 2: GENERATE SSH KEYS
+==========================
+Run in terminal (Git Bash on Windows):
+
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa -N ""
+
+SAVE THE PRIVATE KEY:
+┌─────────────────────────────────────────────┐
+│ SSH Private Key (~/.ssh/id_rsa):            │
+│                                             │
+│ -----BEGIN RSA PRIVATE KEY-----             │
+│ MIIEpAIBAAKCAQEA...                         │
+│ [full content - copy everything]            │
+│ -----END RSA PRIVATE KEY-----               │
+└─────────────────────────────────────────────┘
+
+
+STEP 3: ADD GITHUB SECRETS
+===========================
+Go to: GitHub → Settings → Secrets and variables → Actions
+
+Click "New repository secret" and add:
+
+Secret #1:
+Name: AWS_ACCESS_KEY_ID
+Value: (from STEP 1)
+
+Secret #2:
+Name: AWS_SECRET_ACCESS_KEY
+Value: (from STEP 1)
+
+Secret #3:
+Name: AWS_REGION
+Value: us-east-1
+
+Secret #4:
+Name: SSH_PRIVATE_KEY
+Value: (from STEP 2 - include -----BEGIN----- and -----END-----)
+
+Secret #5:
+Name: GITHUB_REPO_URL
+Value: https://github.com/YOUR_USERNAME/Portfolio-html-css-js-bootstrap.git
+
+
+STEP 4: CREATE terraform.tfvars
+================================
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+
+Edit terraform.tfvars with:
+- aws_region = "us-east-1"
+- instance_type = "t2.micro"
+- public_key_path = "~/.ssh/id_rsa.pub"
+- github_repo_url = "https://github.com/YOUR_USERNAME/..."
+
+
+STEP 5: DEPLOY
+==============
+
+Option A - Automatic:
+chmod +x ../deploy.sh
+../deploy.sh
+
+Option B - Manual:
+terraform init
+terraform plan -var-file=terraform.tfvars
+terraform apply -var-file=terraform.tfvars
+
+Option C - GitHub Actions:
+git push origin main
+(Watch Actions tab for deployment)
+
+
+TROUBLESHOOTING
+===============
+
+❌ "Terraform init failed"
+→ Check AWS credentials: aws configure
+
+❌ "EC2 not ready"
+→ Wait 2-3 minutes, try again
+
+❌ "Ansible failed"
+→ Check SSH key permissions: chmod 600 ~/.ssh/id_rsa
+
+❌ "Website returns 404"
+→ SSH to instance and check: sudo systemctl status nginx
+
+❌ "GitHub Actions fails"
+→ Check all 5 secrets are added
+→ Verify access key is correct
+
+
+QUICK REFERENCE
+===============
+
+AWS Access Key:      AKIA...
+AWS Secret Key:      [KEEP SECRET!]
+AWS Region:          us-east-1
+SSH Key Location:    ~/.ssh/id_rsa
+Website URL after:   http://<PUBLIC_IP>
+
+
+FINAL CHECKLIST
+===============
+
+Before deploying:
+☐ AWS IAM user created with access keys saved
+☐ SSH keys generated
+☐ GitHub secrets configured (all 5)
+☐ terraform.tfvars updated with correct values
+☐ .gitignore prevents committing secrets
+
+After deployment:
+☐ Terraform apply completed successfully
+☐ Ansible playbook ran without errors
+☐ Website is accessible at public IP
+☐ GitHub Actions showing successful deployment
+
+To see your website:
+1. Run: cd terraform && terraform output instance_public_ip
+2. Open in browser: http://<PUBLIC_IP>
+
+To delete everything:
+cd terraform && terraform destroy -var-file=terraform.tfvars
+
+
+📚 Full Documentation
+====================
+See: AWS_DEPLOYMENT_GUIDE.md
+See: CREDENTIALS_SETUP.md

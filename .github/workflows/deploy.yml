@@ -1,0 +1,97 @@
+name: Deploy Portfolio to AWS (Singapore)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Enable debug mode'
+        required: false
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: "1.5.0"
+
+      - name: Terraform Init
+        working-directory: ./terraform
+        run: terraform init
+
+      - name: Terraform Plan
+        working-directory: ./terraform
+        run: terraform plan -var-file=terraform.tfvars -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: ./terraform
+        run: terraform apply -auto-approve tfplan
+
+      - name: Get EC2 Public IP
+        working-directory: ./terraform
+        run: |
+          terraform output -raw instance_public_ip > ../public_ip.txt
+          echo "Public IP: $(cat ../public_ip.txt)"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/portfolio-key.pem
+          chmod 600 ~/.ssh/portfolio-key.pem
+          ssh-keyscan -H $(cat public_ip.txt) >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Wait for EC2 to be ready
+        run: |
+          timeout 180 bash -c 'until ssh -i ~/.ssh/portfolio-key.pem -o StrictHostKeyChecking=no ubuntu@'$(cat public_ip.txt)' "echo ready"; do sleep 10; done'
+
+      - name: Setup Ansible
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install ansible
+
+      - name: Create Ansible inventory
+        run: |
+          cat > ansible/hosts.ini << EOF
+          [portfolio_servers]
+          $(cat public_ip.txt) ansible_user=ubuntu ansible_private_key_file=~/.ssh/portfolio-key.pem
+          EOF
+
+      - name: Run Ansible playbook
+        run: |
+          ansible-playbook \
+            -i ansible/hosts.ini \
+            -e "github_repo_url=${{ secrets.GITHUB_REPO_URL }}" \
+            ansible/deploy.yml
+
+      - name: Verify deployment
+        run: |
+          sleep 5
+          curl -f http://$(cat public_ip.txt)/ || exit 1
+          echo "✅ Website is live!"
+
+      - name: Create deployment summary
+        run: |
+          echo "## 🚀 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Website URL:" >> $GITHUB_STEP_SUMMARY
+          echo "http://$(cat public_ip.txt)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Resources:" >> $GITHUB_STEP_SUMMARY
+          echo "- **Instance ID**: $(terraform -chdir=terraform output -raw instance_id)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Region**: ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY

@@ -50,7 +50,19 @@ jobs:
       - name: Terraform Plan
         run: |
           cd ./terraform
-          ls -la | grep tfvars
+          echo "=== Checking terraform.tfvars ==="
+          if [ ! -f terraform.tfvars ]; then
+            echo "❌ terraform.tfvars not found, recreating..."
+            cat > terraform.tfvars << 'EOF'
+          aws_region = "${{ secrets.AWS_REGION }}"
+          instance_type = "t2.micro"
+          public_key_path = "~/.ssh/id_rsa.pub"
+          github_repo_url = "${{ secrets.GITHUB_REPO_URL }}"
+          EOF
+          fi
+          echo "=== File contents ==="
+          cat terraform.tfvars
+          echo "=== Running terraform plan ==="
           terraform plan -var-file=terraform.tfvars -out=tfplan
 
       - name: Terraform Apply

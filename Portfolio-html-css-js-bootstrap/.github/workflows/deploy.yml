@@ -41,15 +41,18 @@ jobs:
           ssh-keygen -y -f ~/.ssh/portfolio-key.pem > ~/.ssh/portfolio-key.pub
 
       - name: Create terraform.tfvars
+        env:
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          GITHUB_REPO_URL: ${{ secrets.GITHUB_REPO_URL }}
         run: |
           set -x
           TFVARS_PATH="terraform/terraform.tfvars"
           echo "Creating $TFVARS_PATH..."
-          cat > "$TFVARS_PATH" << 'TFEOF'
-aws_region      = "${{ secrets.AWS_REGION }}"
+          cat > "$TFVARS_PATH" << TFEOF
+aws_region      = "${AWS_REGION}"
 instance_type   = "t2.micro"
-public_key_path = "$HOME/.ssh/portfolio-key.pub"
-github_repo_url = "${{ secrets.GITHUB_REPO_URL }}"
+public_key_path = "${HOME}/.ssh/portfolio-key.pub"
+github_repo_url = "${GITHUB_REPO_URL}"
 TFEOF
           echo "File created. Contents:"
           cat "$TFVARS_PATH"

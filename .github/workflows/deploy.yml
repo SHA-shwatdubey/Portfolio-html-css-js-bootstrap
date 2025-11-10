@@ -72,69 +72,71 @@ EOF
           timeout 300 bash -c "until ssh -o ConnectTimeout=5 -o StrictHostKeyChecking=no -i ~/.ssh/portfolio-key.pem ubuntu@$PUBLIC_IP 'echo ready' 2>/dev/null; do sleep 10; done" || true
 
       - name: Deploy Website
+        env:
+          GITHUB_REPO_URL: ${{ secrets.GITHUB_REPO_URL }}
         run: |
           PUBLIC_IP=$(cat public_ip.txt)
           
           pip install ansible
           
-          cat > inventory.ini << 'INVEOF'
-          [portfolio]
-          $PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/portfolio-key.pem
-          INVEOF
+          cat > inventory.ini << EOF
+[portfolio]
+$PUBLIC_IP ansible_user=ubuntu ansible_ssh_private_key_file=~/.ssh/portfolio-key.pem
+EOF
           
-          ansible-playbook -i inventory.ini << 'PBEOF'
-          ---
-          - hosts: portfolio
-            become: yes
-            tasks:
-              - name: Update apt
-                apt: update_cache=yes
+          ansible-playbook -i inventory.ini << 'EOF'
+---
+- hosts: portfolio
+  become: yes
+  tasks:
+    - name: Update apt
+      apt: update_cache=yes
+    
+    - name: Install nginx git
+      apt:
+        name: [nginx, git]
+        state: present
+    
+    - name: Create deploy directory
+      file:
+        path: /var/www/portfolio
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: '0755'
+    
+    - name: Clone portfolio repo
+      git:
+        repo: "{{ lookup('env', 'GITHUB_REPO_URL') }}"
+        dest: /var/www/portfolio
+        version: main
+      become_user: www-data
+    
+    - name: Configure nginx
+      copy:
+        dest: /etc/nginx/sites-available/default
+        content: |
+          server {
+              listen 80 default_server;
+              server_name _;
+              root /var/www/portfolio;
+              index index.html;
               
-              - name: Install nginx git
-                apt:
-                  name: [nginx, git]
-                  state: present
+              location / {
+                  try_files $uri $uri/ =404;
+              }
               
-              - name: Create deploy directory
-                file:
-                  path: /var/www/portfolio
-                  state: directory
-                  owner: www-data
-                  group: www-data
-                  mode: '0755'
-              
-              - name: Clone portfolio repo
-                git:
-                  repo: "${{ secrets.GITHUB_REPO_URL }}"
-                  dest: /var/www/portfolio
-                  version: main
-                become_user: www-data
-              
-              - name: Configure nginx
-                copy:
-                  dest: /etc/nginx/sites-available/default
-                  content: |
-                    server {
-                        listen 80 default_server;
-                        server_name _;
-                        root /var/www/portfolio;
-                        index index.html;
-                        
-                        location / {
-                            try_files $uri $uri/ =404;
-                        }
-                        
-                        location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
-                            expires 30d;
-                        }
-                    }
-              
-              - name: Enable nginx
-                service:
-                  name: nginx
-                  state: started
-                  enabled: yes
-          PBEOF
+              location ~* \.(jpg|jpeg|png|gif|ico|css|js)$ {
+                  expires 30d;
+              }
+          }
+    
+    - name: Enable nginx
+      service:
+        name: nginx
+        state: started
+        enabled: yes
+EOF
 
       - name: Verify Deployment
         run: |

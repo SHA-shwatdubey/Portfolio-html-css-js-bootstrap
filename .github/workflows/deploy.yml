@@ -36,16 +36,12 @@ jobs:
         env:
           AWS_REGION: ${{ secrets.AWS_REGION }}
           GITHUB_REPO_URL: ${{ secrets.GITHUB_REPO_URL }}
-        run: |
-          cd terraform
-          cat > terraform.tfvars << EOF
+        run: cd terraform && cat > terraform.tfvars << EOF && cat terraform.tfvars
 aws_region = "$AWS_REGION"
 instance_type = "t2.micro"
 public_key_path = "~/.ssh/portfolio-key.pub"
 github_repo_url = "$GITHUB_REPO_URL"
 EOF
-          echo "✓ terraform.tfvars created"
-          cat terraform.tfvars
 
       - name: Terraform Init
         working-directory: ./terraform

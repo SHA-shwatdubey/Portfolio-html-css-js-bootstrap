@@ -41,41 +41,52 @@ jobs:
           ssh-keygen -y -f ~/.ssh/portfolio-key.pem > ~/.ssh/portfolio-key.pub
 
       - name: Create terraform.tfvars
-        env:
-          TF_AWS_REGION: ${{ secrets.AWS_REGION }}
-          TF_GITHUB_REPO_URL: ${{ secrets.GITHUB_REPO_URL }}
         run: |
-          cd "$TF_WORKING_DIR"
-          printf 'aws_region      = "%s"\n' "$TF_AWS_REGION" > terraform.tfvars
-          printf 'instance_type   = "%s"\n' "t2.micro" >> terraform.tfvars
-          printf 'public_key_path = "%s"\n' "$HOME/.ssh/portfolio-key.pub" >> terraform.tfvars
-          printf 'github_repo_url = "%s"\n' "$TF_GITHUB_REPO_URL" >> terraform.tfvars
-          echo "✅ terraform.tfvars created in $(pwd):"
-          ls -la
-          echo "---"
-          cat terraform.tfvars
+          set -x
+          TFVARS_PATH="terraform/terraform.tfvars"
+          echo "Creating $TFVARS_PATH..."
+          cat > "$TFVARS_PATH" << 'TFEOF'
+aws_region      = "${{ secrets.AWS_REGION }}"
+instance_type   = "t2.micro"
+public_key_path = "$HOME/.ssh/portfolio-key.pub"
+github_repo_url = "${{ secrets.GITHUB_REPO_URL }}"
+TFEOF
+          echo "File created. Contents:"
+          cat "$TFVARS_PATH"
+          echo "File size: $(wc -c < "$TFVARS_PATH") bytes"
 
       - name: Terraform Init
-        run: terraform -chdir="$TF_WORKING_DIR" init
+        run: |
+          set -x
+          cd terraform
+          terraform init
+          ls -la terraform.tfvars
 
       - name: Terraform Plan
         run: |
-          echo "PWD before changing: $(pwd)"
-          ls -la "$TF_WORKING_DIR"
-          if [ ! -f "$TF_WORKING_DIR/terraform.tfvars" ]; then
-            echo "❌ terraform.tfvars missing" >&2
-            exit 1
-          fi
-          echo "=== terraform.tfvars ==="
-          cat "$TF_WORKING_DIR/terraform.tfvars"
-          terraform -chdir="$TF_WORKING_DIR" plan -var-file=terraform.tfvars -out=tfplan
+          set -x
+          cd terraform
+          echo "Current directory: $(pwd)"
+          echo "Files in current directory:"
+          ls -la
+          echo "Checking terraform.tfvars..."
+          test -f terraform.tfvars && echo "✓ File exists" || (echo "✗ File missing" && exit 1)
+          echo "File contents:"
+          cat terraform.tfvars
+          echo "Running terraform plan..."
+          terraform plan -var-file=terraform.tfvars -out=tfplan
 
       - name: Terraform Apply
-        run: terraform -chdir="$TF_WORKING_DIR" apply -auto-approve tfplan
+        run: |
+          set -x
+          cd terraform
+          terraform apply -auto-approve tfplan
 
       - name: Get EC2 Public IP
         run: |
-          terraform -chdir="$TF_WORKING_DIR" output -raw instance_public_ip > public_ip.txt
+          set -x
+          cd terraform
+          terraform output -raw instance_public_ip > ../public_ip.txt
           echo "Public IP: $(cat ../public_ip.txt)"
 
       - name: Setup SSH key
@@ -115,11 +126,13 @@ jobs:
 
       - name: Create deployment summary
         run: |
+          set -x
+          INSTANCE_ID=$(cd terraform && terraform output -raw instance_id)
           echo "## 🚀 Deployment Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Website URL:" >> $GITHUB_STEP_SUMMARY
           echo "http://$(cat public_ip.txt)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Resources:" >> $GITHUB_STEP_SUMMARY
-          echo "- **Instance ID**: $(terraform -chdir="$TF_WORKING_DIR" output -raw instance_id)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Instance ID**: $INSTANCE_ID" >> $GITHUB_STEP_SUMMARY
           echo "- **Region**: ${{ secrets.AWS_REGION }}" >> $GITHUB_STEP_SUMMARY

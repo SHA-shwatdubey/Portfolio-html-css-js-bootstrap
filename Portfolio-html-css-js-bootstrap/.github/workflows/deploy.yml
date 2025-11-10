@@ -51,7 +51,7 @@ jobs:
         run: |
           cd ./terraform
           ls -la | grep tfvars
-          terraform plan -var-file=$(pwd)/terraform.tfvars -out=tfplan
+          terraform plan -var-file=terraform.tfvars -out=tfplan
 
       - name: Terraform Apply
         run: |

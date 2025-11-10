@@ -31,6 +31,13 @@ jobs:
         with:
           terraform_version: "1.5.0"
 
+      - name: Prepare SSH key material
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/portfolio-key.pem
+          chmod 600 ~/.ssh/portfolio-key.pem
+          ssh-keygen -y -f ~/.ssh/portfolio-key.pem > ~/.ssh/portfolio-key.pub
+
       - name: Create terraform.tfvars
         working-directory: ./terraform
         run: |
@@ -75,9 +82,7 @@ EOF
       - name: Setup SSH key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/portfolio-key.pem
           chmod 600 ~/.ssh/portfolio-key.pem
-          ssh-keygen -y -f ~/.ssh/portfolio-key.pem > ~/.ssh/portfolio-key.pub
           ssh-keyscan -H $(cat public_ip.txt) >> ~/.ssh/known_hosts 2>/dev/null || true
 
       - name: Wait for EC2 to be ready
